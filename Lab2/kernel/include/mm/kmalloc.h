@@ -19,8 +19,8 @@ void *_kmalloc(size_t size, bool is_record, size_t *real_size);
 void *_get_pages(int order, bool is_record);
 void _kfree(void *ptr, bool is_revoke_record);
 
-void *kmalloc(unsigned long size);
-void *kzalloc(unsigned long size);
+void *kmalloc(size_t size);
+void *kzalloc(size_t size);
 void kfree(void* ptr);
 
 /* Return vaddr of (1 << order) continous free physical pages */
