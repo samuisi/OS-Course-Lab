@@ -10,6 +10,7 @@
  * See the Mulan PSL v2 for more details.
  */
 
+#include "common/list.h"
 #include <common/macro.h>
 #include <common/types.h>
 #include <common/kprint.h>
@@ -139,7 +140,13 @@ static void choose_new_current_slab(struct slab_pointer * __maybe_unused pool)
         /* LAB 2 TODO 2 BEGIN */
         /* Hint: Choose a partial slab to be a new current slab. */
         /* BLANK BEGIN */
-
+        if (list_empty(&pool->partial_slab_list)) {
+                pool->current_slab = NULL;
+                return;
+        }
+        struct slab_header* slab = list_entry(pool->partial_slab_list.next, struct slab_header, node);
+        list_del(&slab->node);
+        pool->current_slab = slab;
         /* BLANK END */
         /* LAB 2 TODO 2 END */
 }
@@ -170,7 +177,17 @@ static void *alloc_in_slab_impl(int order)
          * If current slab is full, choose a new slab as the current one.
          */
         /* BLANK BEGIN */
-
+        if (current_slab->current_free_cnt == 0) {
+                choose_new_current_slab(&slab_pool[order]);
+                current_slab = slab_pool[order].current_slab;
+                if (current_slab == NULL) {
+                        unlock(&slabs_locks[order]);
+                        return NULL;
+                }
+        }
+        free_list = (struct slab_slot_list*)current_slab->free_list_head;
+        current_slab->free_list_head = free_list->next_free;
+        current_slab->current_free_cnt--;
         /* BLANK END */
         /* LAB 2 TODO 2 END */
 
@@ -297,8 +314,9 @@ void free_in_slab(void *addr)
          * Hint: Free an allocated slot and put it back to the free list.
          */
         /* BLANK BEGIN */
-
-        UNUSED(slot);
+        slot->next_free = slab->free_list_head;
+        slab->free_list_head = slot;
+        slab->current_free_cnt++;
         /* BLANK END */
         /* LAB 2 TODO 2 END */
 
