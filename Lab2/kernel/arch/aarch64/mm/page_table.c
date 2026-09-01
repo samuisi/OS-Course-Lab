@@ -300,10 +300,33 @@ int query_in_pgtbl(void *pgtbl, vaddr_t va, paddr_t *pa, pte_t **entry)
          * `-ENOMAPPING` if the va is not mapped.
          */
         /* BLANK BEGIN */
-
+        ptp_t* cur_ptp = pgtbl;
+        ptp_t* next_ptp;
+        pte_t *pte;
+        for (int level = L0; level <= L3; level++) {
+                int ret = get_next_ptp(
+                        cur_ptp, level, va, &next_ptp, &pte, false, NULL);
+                if (ret < 0) return ret;
+                if (ret == BLOCK_PTP && level == L1) {
+                        *entry = pte;
+                        *pa = (pte->l1_block.pfn << L1_INDEX_SHIFT) + GET_VA_OFFSET_L1(va);
+                        return 0;
+                }
+                if (ret == BLOCK_PTP && level == L2) {
+                        *entry = pte;
+                        *pa = (pte->l2_block.pfn << L2_INDEX_SHIFT) + GET_VA_OFFSET_L2(va);
+                        return 0;
+                }
+                if (level == L3) {
+                        *entry = pte;
+                        *pa = (pte->l3_page.pfn << L3_INDEX_SHIFT) + GET_VA_OFFSET_L3(va);
+                        return 0;
+                }
+                cur_ptp = next_ptp;
+        }
         /* BLANK END */
         /* LAB 2 TODO 4 END */
-        return 0;
+        return -ENOMAPPING;
 }
 
 static int map_range_in_pgtbl_common(void *pgtbl, vaddr_t va, paddr_t pa,
@@ -320,7 +343,28 @@ static int map_range_in_pgtbl_common(void *pgtbl, vaddr_t va, paddr_t pa,
          * Return 0 on success.
          */
         /* BLANK BEGIN */
+        vaddr_t cur_va = va;
+        paddr_t cur_pa = pa;
+        size_t mapped_len = 0;
+        for (cur_va = va, cur_pa = pa; mapped_len < len; cur_va += PAGE_SIZE, cur_pa += PAGE_SIZE, mapped_len += PAGE_SIZE) {
+                ptp_t* cur_ptp = pgtbl;
+                ptp_t* next_ptp = NULL;
+                pte_t* pte = NULL;
+                for (int level = L0; level <= L2; level++) {
+                        int ret = get_next_ptp(cur_ptp, level, cur_va, &next_ptp, &pte, true, rss);
+                        if (ret < 0) return ret;
+                        cur_ptp = next_ptp;
+                }
+                pte_t* l3_entry = &cur_ptp->ent[GET_L3_INDEX(cur_va)];
+                
+                l3_entry->pte = 0;
+                l3_entry->l3_page.is_valid = 1;
+                l3_entry->l3_page.is_page = 1;
+                l3_entry->l3_page.pfn = cur_pa >> PAGE_SHIFT;
+                set_pte_flags(l3_entry, flags, kind);
 
+                if (rss) *rss += PAGE_SIZE;
+        }
         /* BLANK END */
         /* LAB 2 TODO 4 END */
         dsb(ishst);
@@ -398,7 +442,31 @@ int unmap_range_in_pgtbl(void *pgtbl, vaddr_t va, size_t len,
          * Return 0 on success.
          */
         /* BLANK BEGIN */
-
+        for (vaddr_t cur_va = va; cur_va < va + len; cur_va += PAGE_SIZE) {
+                ptp_t* cur_ptp = pgtbl;
+                ptp_t* next_ptp = NULL;
+                pte_t* pte = NULL;
+                ptp_t* ptps[4];
+                bool unmapped = false;
+                for (int level = L0; level <= L2; level++) {
+                        int ret = get_next_ptp(cur_ptp, level, cur_va, &next_ptp, &pte, false, NULL);
+                        if (ret < 0) {
+                                unmapped = true;
+                                break;
+                        }
+                        ptps[level] = cur_ptp;
+                        cur_ptp = next_ptp;
+                }
+                if (unmapped)
+                        continue;
+                ptps[3] = cur_ptp;
+                pte_t* l3_entry = &cur_ptp->ent[GET_L3_INDEX(cur_va)];
+                if (!IS_PTE_INVALID(l3_entry->pte)) {
+                        l3_entry->pte = PTE_DESCRIPTOR_INVALID;
+                        if (rss) *rss -= PAGE_SIZE;
+                }
+                recycle_pgtable_entry(ptps[0], ptps[1], ptps[2], ptps[3], cur_va, rss);
+        }
         /* BLANK END */
         /* LAB 2 TODO 4 END */
 
@@ -418,7 +486,22 @@ int mprotect_in_pgtbl(void *pgtbl, vaddr_t va, size_t len, vmr_prop_t flags)
          * Return 0 on success.
          */
         /* BLANK BEGIN */
-
+        for (size_t offset = 0; offset < len; offset += PAGE_SIZE) {
+                ptp_t* cur_ptp = pgtbl;
+                ptp_t* next_ptp = NULL;
+                pte_t* pte = NULL;
+                bool mapped = true;
+                for (int level = L0; level <= L3; level++) {
+                        int ret = get_next_ptp(cur_ptp, level, va + offset, &next_ptp, &pte, false, NULL);
+                        if (ret < 0) {
+                                mapped = false;
+                                break;
+                        }
+                        cur_ptp = next_ptp;
+                }
+                if (!mapped) continue;
+                set_pte_flags(pte, flags, USER_PTE);
+        }
         /* BLANK END */
         /* LAB 2 TODO 4 END */
         return 0;
