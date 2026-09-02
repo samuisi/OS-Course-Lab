@@ -181,8 +181,12 @@ static void *alloc_in_slab_impl(int order)
                 choose_new_current_slab(&slab_pool[order]);
                 current_slab = slab_pool[order].current_slab;
                 if (current_slab == NULL) {
-                        unlock(&slabs_locks[order]);
-                        return NULL;
+                        current_slab = init_slab_cache(order, SIZE_OF_ONE_SLAB);
+                        if (current_slab == NULL) {
+                                unlock(&slabs_locks[order]);
+                                return NULL;
+                        }
+                        slab_pool[order].current_slab = current_slab;
                 }
         }
         free_list = (struct slab_slot_list*)current_slab->free_list_head;

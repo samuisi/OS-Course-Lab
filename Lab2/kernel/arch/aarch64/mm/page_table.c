@@ -170,6 +170,7 @@ static int get_next_ptp(ptp_t *cur_ptp, u32 level, vaddr_t va, ptp_t **next_ptp,
                         if (new_ptp == NULL)
                                 return -ENOMEM;
                         memset((void *)new_ptp, 0, PAGE_SIZE);
+                        if (rss) *rss += PAGE_SIZE;
 
                         new_ptp_paddr = virt_to_phys((vaddr_t)new_ptp);
 
@@ -300,6 +301,7 @@ int query_in_pgtbl(void *pgtbl, vaddr_t va, paddr_t *pa, pte_t **entry)
          * `-ENOMAPPING` if the va is not mapped.
          */
         /* BLANK BEGIN */
+        if (pgtbl == NULL) return -ENOMAPPING;
         ptp_t* cur_ptp = pgtbl;
         ptp_t* next_ptp;
         pte_t *pte;
@@ -308,18 +310,18 @@ int query_in_pgtbl(void *pgtbl, vaddr_t va, paddr_t *pa, pte_t **entry)
                         cur_ptp, level, va, &next_ptp, &pte, false, NULL);
                 if (ret < 0) return ret;
                 if (ret == BLOCK_PTP && level == L1) {
-                        *entry = pte;
-                        *pa = (pte->l1_block.pfn << L1_INDEX_SHIFT) + GET_VA_OFFSET_L1(va);
+                        if (entry) *entry = pte;
+                        if (pa) *pa = (pte->l1_block.pfn << L1_INDEX_SHIFT) + GET_VA_OFFSET_L1(va);
                         return 0;
                 }
                 if (ret == BLOCK_PTP && level == L2) {
-                        *entry = pte;
-                        *pa = (pte->l2_block.pfn << L2_INDEX_SHIFT) + GET_VA_OFFSET_L2(va);
+                        if (entry) *entry = pte;
+                        if (pa) *pa = (pte->l2_block.pfn << L2_INDEX_SHIFT) + GET_VA_OFFSET_L2(va);
                         return 0;
                 }
                 if (level == L3) {
-                        *entry = pte;
-                        *pa = (pte->l3_page.pfn << L3_INDEX_SHIFT) + GET_VA_OFFSET_L3(va);
+                        if (entry) *entry = pte;
+                        if (pa) *pa = (pte->l3_page.pfn << L3_INDEX_SHIFT) + GET_VA_OFFSET_L3(va);
                         return 0;
                 }
                 cur_ptp = next_ptp;
@@ -411,6 +413,7 @@ static int try_release_ptp(ptp_t *high_ptp, ptp_t *low_ptp, int index,
         BUG_ON(index < 0 || index >= PTP_ENTRIES);
         high_ptp->ent[index].pte = PTE_DESCRIPTOR_INVALID;
         kfree(low_ptp);
+        if (rss) *rss -= PAGE_SIZE;
 
         return 1;
 }
