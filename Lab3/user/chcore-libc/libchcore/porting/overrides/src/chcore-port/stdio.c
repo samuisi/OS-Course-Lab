@@ -13,6 +13,7 @@
 /* File operation towards STDIN, STDOUT and STDERR */
 
 #include "fd.h"
+#include "uapi/syscall_num.h"
 #include <assert.h>
 #include <errno.h>
 #include <sys/types.h>
@@ -131,7 +132,7 @@ static int get_one_char(void)
 static void put(char buffer[], unsigned size)
 {
         /* LAB 3 TODO BEGIN */
-
+        chcore_syscall2(CHCORE_SYS_putstr, (long)buffer, size);
         /* LAB 3 TODO END */
 }
 
