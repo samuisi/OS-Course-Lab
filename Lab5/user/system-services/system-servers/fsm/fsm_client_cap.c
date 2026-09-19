@@ -10,6 +10,7 @@
  * Mulan PSL v2 for more details.
  */
 
+#include "chcore/container/list.h"
 #include <malloc.h>
 #include <string.h>
 #include "fsm_client_cap.h"
@@ -26,7 +27,34 @@ int fsm_set_client_cap(badge_t client_badge, cap_t cap)
          * should allocate the node if it's not present or get the
          * fs_client_cap_node. Iterate through the cap_table and place the cap
          * in an empty slot of the cap_table and returns its ordinal.*/
-        return 0;
+        struct fsm_client_cap_node* n;
+        bool find = false;
+        int i, id;
+
+        for_each_in_list(n, struct fsm_client_cap_node, node, &fsm_client_cap_table) {
+                if (n->client_badge == client_badge) {
+                        find = true;
+                        break;
+                }
+        }
+        if (!find) {
+                n = calloc(1, sizeof(struct fsm_client_cap_node));
+                if (n == NULL) return -ENOMEM;
+                n->client_badge = client_badge;
+                init_list_head(&n->node);
+                list_add(&n->node, &fsm_client_cap_table);
+        }
+        
+        for (i = 0; i < n->cap_num; i++) {
+                if (n->cap_table[i] == cap) {
+                        return i;
+                }
+        }
+        
+        if (n->cap_num >= 16) return -EMFILE;
+        id = n->cap_num++;
+        n->cap_table[id] = cap;
+        return id;
         /* Lab 5 TODO End (Part 1) */
 }
 
@@ -36,6 +64,16 @@ int fsm_get_client_cap(badge_t client_badge, cap_t cap)
         /* Lab 5 TODO Begin (Part 1) */
         /* HINT: Perform the same behavior as fsm_set_client_cap and gets the
          * cap from the cap_table if it exists. */
+        struct fsm_client_cap_node* n;
+        for_each_in_list(n, struct fsm_client_cap_node, node, &fsm_client_cap_table) {
+                int i;
+                if (client_badge != n->client_badge) continue;
+                for (i = 0; i < n->cap_num; i++) {
+                        if (n->cap_table[i] == cap)
+                                return i;
+                }
+                return -1;
+        }
         return -1;
         /* Lab 5 TODO End (Part 1) */
 }

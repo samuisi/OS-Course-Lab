@@ -149,12 +149,13 @@ int fsm_mount_fs(const char *path, const char *mount_point)
          * unmount request to the corresponding filesystem. Register an ipc client for each node*/
         
         /* mp_node->_fs_ipc_struct = ipc_register_client(...) */
+        mp_node->_fs_ipc_struct = ipc_register_client(fs_cap);
 
         /* Increment the fs_num */
+        fs_num++;
 
         /* Set the correct return value */
-
-        UNUSED(mp_node);
+        ret = 0;
 
         pthread_rwlock_unlock(&mount_point_infos_rwlock);
         /* Lab 5 TODO End (Part 1) */
@@ -282,10 +283,33 @@ DEFINE_SERVER_HANDLER(fsm_dispatch)
 
                 /* Before returning to the caller , unlock the client_cap_table
                  * and mount_info_table */
+                pthread_rwlock_rdlock(&mount_point_infos_rwlock);
+                mpinfo = get_mount_point(fsm_req->path, strlen(fsm_req->path));
+                pthread_mutex_lock(&fsm_client_cap_table_lock);
+                mount_id = fsm_get_client_cap(client_badge, mpinfo->fs_cap);
+                if (mount_id < 0) {
+                        mount_id = fsm_set_client_cap(client_badge, mpinfo->fs_cap);
+                        if (mount_id < 0) {
+                                ret = mount_id;
+                        } else {
+                                ipc_set_msg_cap(ipc_msg, 0, mpinfo->fs_cap);
+                                ipc_set_msg_return_cap_num(ipc_msg, 1);
+                                ret_with_cap = true;
+                                fsm_req->new_cap_flag = 1;
+                        }
+                } else {
+                        fsm_req->new_cap_flag = 0;
+                }
+                
+                if (ret == 0) {
+                        fsm_req->mount_id = mount_id;
+                        fsm_req->mount_path_len = mpinfo->path_len;
+                        strncpy(fsm_req->mount_path, mpinfo->path, mpinfo->path_len);
+                        fsm_req->mount_path[mpinfo->path_len] = '\0';
+                }
 
-                UNUSED(mpinfo);
-
-                UNUSED(mount_id);
+                pthread_mutex_unlock(&fsm_client_cap_table_lock);                
+                pthread_rwlock_unlock(&mount_point_infos_rwlock);
                 /* Lab 5 TODO End (Part 1) */
                 break;
         }
