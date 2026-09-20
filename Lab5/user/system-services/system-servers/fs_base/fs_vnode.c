@@ -10,8 +10,10 @@
  * See the Mulan PSL v2 for more details.
  */
 
+#include "chcore/container/rbtree.h"
 #include <chcore-internal/fs_debug.h>
 #include <chcore/syscall.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -94,9 +96,21 @@ struct fs_vnode *alloc_fs_vnode(ino_t id, enum fs_vnode_type type, off_t size,
                                 void *private)
 {
         /* Lab 5 TODO Begin (Part 2) */
-
-        return NULL;
-
+        struct fs_vnode *node = malloc(sizeof(struct fs_vnode));
+        if (node == NULL)
+                return NULL;
+        node->vnode_id = id;
+        node->type = type;
+        node->size = size;
+        node->refcnt = 1;
+        node->pmo_cap = -1;
+        node->private = private;
+        node->page_cache = NULL;
+        if (using_page_cache) {
+                node->page_cache = new_page_cache_entity_of_inode(id, node);
+        }
+        pthread_rwlock_init(&node->rwlock, NULL);
+        return node;
         /* Lab 5 TODO End (Part 2) */
 }
 
@@ -118,7 +132,10 @@ struct fs_vnode *get_fs_vnode_by_id(ino_t vnode_id)
 {
         /* Lab 5 TODO Begin (Part 2) */
         /* Use the rb_xxx api */
-        return NULL;
+        struct rb_node *node = rb_search(fs_vnode_list, (const void *)&vnode_id, comp_vnode_key);
+        if (node == NULL)
+                return NULL;
+        return rb_entry(node, struct fs_vnode, node);
         /* Lab 5 TODO End (Part 2) */
 }
 
@@ -127,7 +144,8 @@ int inc_ref_fs_vnode(void *private)
 {
         /* Lab 5 TODO Begin (Part 2) */
         /* Private is a fs_vnode */
-        UNUSED(private);
+        struct fs_vnode *vnode = (struct fs_vnode *)private;
+        vnode->refcnt++;
         return 0;
         /* Lab 5 TODO End (Part 2) */
 }
@@ -136,7 +154,20 @@ int dec_ref_fs_vnode(void *private)
 {
         /* Lab 5 TODO Begin (Part 2) */
         /* Private is a fs_vnode Decrement its refcnt */
-        UNUSED(private);
+        struct fs_vnode *vnode = (struct fs_vnode *)private;
+        vnode->refcnt--;
+        assert(vnode->refcnt >= 0);
+        if (vnode->refcnt == 0) {
+                int ret = 0;
+                if (server_ops.close) {
+                        ret = server_ops.close(vnode->private, vnode->type == FS_NODE_DIR, true);
+                }
+                if (ret) {
+                        printf("close error: %d\n", ret);
+                        return ret;
+                }
+                pop_free_fs_vnode(vnode);
+        }
         return 0;
         /* Lab 5 TODO End (Part 2) */
 }

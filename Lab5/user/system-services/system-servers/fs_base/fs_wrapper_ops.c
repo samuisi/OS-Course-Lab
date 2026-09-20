@@ -14,6 +14,7 @@
 #include "fcntl.h"
 #include "sys/stat.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <chcore/bug.h>
 #include <chcore/type.h>
@@ -21,6 +22,7 @@
 #include <chcore-internal/fs_defs.h>
 #include <chcore-internal/fs_debug.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <chcore/defs.h>
@@ -28,6 +30,7 @@
 #include "fs_page_cache.h"
 #include "fs_vnode.h"
 #include "fs_page_fault.h"
+#include <sys/stat.h>
 
 /* Return true if fd is NOT valid */
 static inline bool fd_type_invalid(int fd, bool isfile)
@@ -135,7 +138,61 @@ int fs_wrapper_open(badge_t client_badge, ipc_msg_t *ipc_msg,
 
         /* Return the client fd */
 
-        return 0;
+        ino_t vnode_id;
+        off_t vnode_size;
+        int vnode_type;
+        void* private;
+        int flags = fr->open.flags;
+        int mode = fr->open.mode;
+        
+        if ((flags & (O_CREAT | O_EXCL)) == (O_CREAT | O_EXCL)) {
+                struct stat st;
+                if (server_ops.fstatat(fr->open.pathname, &st, AT_SYMLINK_NOFOLLOW) == 0) {
+                        return -EEXIST;
+                }
+        }
+
+        int ret = server_ops.open(fr->open.pathname, flags, mode,
+                &vnode_id, &vnode_size, &vnode_type, &private);
+        if (ret < 0) return ret;
+
+        if ((flags & O_DIRECTORY) && vnode_type != FS_NODE_DIR) {
+                server_ops.close(private, false, true);
+                return -ENOTDIR;
+        }
+        
+        if (vnode_type == FS_NODE_DIR && ((flags & O_ACCMODE) != O_RDONLY)) {
+                server_ops.close(private, true, true);
+                return -EISDIR;
+        }
+        
+        if (vnode_type == FS_NODE_REG && (flags & O_TRUNC)) {
+                server_ops.ftruncate(private, 0);
+                vnode_size = 0;
+        }
+
+        struct fs_vnode* vnode = get_fs_vnode_by_id(vnode_id);
+        if (vnode == NULL) {
+                vnode = alloc_fs_vnode(vnode_id, vnode_type, vnode_size, private);
+                if (vnode == NULL) {
+                        server_ops.close(private, false, false);
+                        return -ENOMEM;
+                }
+                push_fs_vnode(vnode);
+        } else {
+                server_ops.close(private, false, false);
+                inc_ref_fs_vnode(vnode);
+        }
+        
+        int fid = alloc_entry();
+        if (fid < 0) {
+                dec_ref_fs_vnode(vnode);
+                return -ENOMEM;
+        }
+        char* path = strdup(fr->open.pathname);
+        assign_entry(server_entrys[fid], fr->open.flags, 0, 1, path, vnode);
+        fs_wrapper_set_server_entry(client_badge, fr->open.new_fd, fid);
+        return fr->open.new_fd;
         /* Lab 5 TODO End (Part 4)*/
 }
 
@@ -151,6 +208,16 @@ int fs_wrapper_close(badge_t client_badge, ipc_msg_t *ipc_msg,
         /* If refcnt is 0, free the server_entry and decrement the vnode
          * refcnt*/
 
+        int fid = fr->close.fd;
+        if (fid < 0 || fid >= MAX_SERVER_ENTRY_NUM || server_entrys[fid] == NULL) return -1;
+        struct server_entry* entry = server_entrys[fid];
+        entry->refcnt--;
+        if (entry->refcnt == 0) {
+                fs_wrapper_clear_server_entry(client_badge, fid);
+                dec_ref_fs_vnode(server_entrys[fid]->vnode);
+                free_entry(fid);
+        }
+        
         return 0;
         /* Lab 5 TODO End (Part 4)*/
 }
@@ -170,7 +237,27 @@ static int __fs_wrapper_read_core(struct server_entry *server_entry, void *buf,
         /* Do check the boundary of the file and file permission correctly Check
          * Posix Standard for further references. */
         /* You also should update the offset of the server_entry offset */
-        return 0;
+        struct fs_vnode* vnode = server_entry->vnode;
+        int ret;
+        
+        if ((server_entry->flags & O_ACCMODE) == O_WRONLY) {
+                return -EBADF;
+        }
+        
+        if (vnode->type == FS_NODE_DIR) {
+                return -EISDIR;
+        }
+        
+        if (offset >= vnode->size) {
+                return 0;
+        }
+        
+        if (offset + size > vnode->size) {
+                size = vnode->size - offset;
+        }
+
+        ret = server_ops.read(vnode->private, offset, size, buf);
+        return ret;
         /* Lab 5 TODO End (Part 4)*/
 }
 
@@ -253,7 +340,25 @@ static int __fs_wrapper_write_core(struct server_entry *server_entry, void *buf,
         /* Do check the boundary of the file and file permission correctly Check
          * Posix Standard for further references. */
         /* You also should update the offset of the server_entry offset */
-        return 0;
+        struct fs_vnode* vnode = server_entry->vnode;
+
+        if ((server_entry->flags & O_ACCMODE) == O_RDONLY) {
+                return -EBADF;
+        }
+
+        if (vnode->type == FS_NODE_DIR) {
+                return -EISDIR;
+        }
+
+        if (offset < 0) return -EINVAL;
+        
+        if (size == 0) return 0;
+
+        int ret = 0;
+        pthread_rwlock_rdlock(&vnode->rwlock);
+        ret = server_ops.write(vnode->private, offset, size, buf);
+        pthread_rwlock_unlock(&vnode->rwlock);
+        return ret;
         /* Lab 5 TODO End (Part 4)*/
 }
 
@@ -370,6 +475,41 @@ int fs_wrapper_lseek(ipc_msg_t *ipc_msg, struct fs_request *fr)
 {
         /* Lab 5 TODO Begin (Part 4)*/
         /* Check the posix standard. Adjust the server_entry content.*/
+        
+        int fd = fr->lseek.fd;
+        off_t offset = fr->lseek.offset;
+        int whence = fr->lseek.whence;
+
+        if (fd_type_invalid(fd, true)) {
+                return -EBADF;
+        }
+        
+        struct server_entry* entry = server_entrys[fd];
+        struct fs_vnode* vnode = entry->vnode;
+
+        if (vnode == NULL) return -EEXIST;
+        off_t new_off = offset;
+        switch (whence) {
+        case SEEK_SET:
+                new_off = offset;
+                break;
+        case SEEK_CUR:
+                new_off = entry->offset + offset;
+                break;
+        case SEEK_END:
+                new_off = vnode->size + offset;
+                break;
+        default:
+                return -EINVAL;
+        }
+        
+        if (new_off < 0) return -EINVAL;
+        
+        pthread_mutex_lock(&entry->lock);
+        entry->offset = new_off;
+        pthread_mutex_unlock(&entry->lock);
+        fr->lseek.ret = new_off;
+
         return 0;
         /* Lab 5 TODO End (Part 4)*/
 }

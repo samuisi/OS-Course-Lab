@@ -11,6 +11,7 @@
  */
 
 #include "chcore-internal/procmgr_defs.h"
+#include "chcore/container/list.h"
 #include "chcore/ipc.h"
 #include <errno.h>
 #include <pthread.h>
@@ -113,6 +114,21 @@ void init_fs_wrapper(void)
 int fs_wrapper_get_server_entry(badge_t client_badge, int fd)
 {
         /* Lab 5 TODO Begin (Part 3)*/
+        if (fd == AT_FDROOT) return AT_FDROOT;
+        if (fd < 0 || fd >= MAX_SERVER_ENTRY_PER_CLIENT) return -1;
+        struct server_entry_node *private_iter;
+        pthread_spin_lock(&server_entry_mapping_lock);
+        for_each_in_list (private_iter,
+                          struct server_entry_node,
+                          node,
+                          &server_entry_mapping) {
+                if (private_iter->client_badge == client_badge) {
+                        int ret = private_iter->fd_to_fid[fd];
+                        pthread_spin_unlock(&server_entry_mapping_lock);
+                        return ret;
+                }
+        }
+        pthread_spin_unlock(&server_entry_mapping_lock);
         return -1;
         /* Lab 5 TODO End (Part 3)*/
 }
@@ -121,7 +137,31 @@ int fs_wrapper_get_server_entry(badge_t client_badge, int fd)
 int fs_wrapper_set_server_entry(badge_t client_badge, int fd, int fid)
 {
         /* Lab 5 TODO Begin (Part 3)*/
-        return 0;
+        int ret = 0;
+        if (fd < 0 || fd >= MAX_SERVER_ENTRY_PER_CLIENT) return -1;
+        struct server_entry_node* private_iter;
+        pthread_spin_lock(&server_entry_mapping_lock);
+        for_each_in_list(private_iter, struct server_entry_node, node, &server_entry_mapping) {
+                if (private_iter->client_badge == client_badge) {
+                        private_iter->fd_to_fid[fd] = fid;
+                        goto exit;
+                }
+        }
+        
+        // create entry node when not exist
+        private_iter = malloc(sizeof(struct server_entry_node));
+        if (private_iter == NULL) {
+                ret = -1;
+                goto exit;
+        }
+        init_list_head(&private_iter->node);
+        private_iter->client_badge = client_badge;
+        memset(private_iter->fd_to_fid, -1, sizeof(private_iter->fd_to_fid));
+        private_iter->fd_to_fid[fd] = fid;
+        list_add(&private_iter->node, &server_entry_mapping);
+exit:
+        pthread_spin_unlock(&server_entry_mapping_lock);
+        return ret;
         /* Lab 5 TODO End (Part 3)*/
 }
 
@@ -136,7 +176,7 @@ void fs_wrapper_clear_server_entry(badge_t client_badge, int fid)
                           node,
                           &server_entry_mapping) {
                 if (private_iter->client_badge == client_badge) {
-                        for (int i = 0; i < MAX_SERVER_ENTRY_NUM; i++) {
+                        for (int i = 0; i < MAX_SERVER_ENTRY_PER_CLIENT; i++) {
                                 if (private_iter->fd_to_fid[i] == fid) {
                                         private_iter->fd_to_fid[i] = -1;
                                 }
